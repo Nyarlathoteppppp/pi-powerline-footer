@@ -87,18 +87,18 @@ test("computeSessionTokenStats aggregates usage and tracks thinking level", () =
     userEvent(),
     { type: "thinking_level_change", thinkingLevel: "high" },
     assistantEvent(makeUsage(10, 5)),
-    assistantEvent(makeUsage(20, 7, 3, 2), "error"), // skipped: error
-    assistantEvent(makeUsage(30, 9, 4, 1), "aborted"), // skipped: aborted
+    assistantEvent(makeUsage(20, 7, 3, 2), "error"), // billed failure
+    assistantEvent(makeUsage(30, 9, 4, 1), "aborted"), // billed abort
     assistantEvent(makeUsage(40, 11, 6, 2)),
   ];
 
   const stats = computeSessionTokenStats(events);
 
-  assert.equal(stats.input, 50);
-  assert.equal(stats.output, 16);
-  assert.equal(stats.cacheRead, 6);
-  assert.equal(stats.cacheWrite, 2);
-  assert.ok(Math.abs(stats.cost - 0.074) < 1e-12);
+  assert.equal(stats.input, 100);
+  assert.equal(stats.output, 32);
+  assert.equal(stats.cacheRead, 13);
+  assert.equal(stats.cacheWrite, 5);
+  assert.ok(Math.abs(stats.cost - 0.150) < 1e-12);
   assert.equal(stats.lastAssistant, (events[5] as any).message);
   assert.equal(stats.thinkingLevelFromSession, "high");
 });
@@ -189,12 +189,14 @@ test("cache recomputes when the last event turns into an error in place", () => 
 
   const first = cache.get(events);
   assert.equal(first.input, 11);
+  assert.equal(first.lastAssistant, tail.message);
 
   tail.message.stopReason = "error";
 
   const second = cache.get(events);
   assert.notEqual(second, first);
-  assert.equal(second.input, 1);
+  assert.equal(second.input, 11);
+  assert.equal(second.lastAssistant, events[0].message);
 });
 
 test("cache recomputes when the last event is replaced with a same-sized list", () => {
@@ -242,8 +244,185 @@ test("reset forces recomputation", () => {
 
 test("index.ts wires the token stats cache into buildSegmentContext", () => {
   const source = readFileSync(new URL("../index.ts", import.meta.url), "utf-8");
-  assert.match(source, /import \{ SessionBranchCache, SessionTokenStatsCache \} from "\.\/token-stats\.ts";/);
-  assert.match(source, /sessionBranchCache\.get\(ctx\.sessionManager\)/);
-  assert.match(source, /tokenStatsCache\.get\(sessionEvents\)/);
+  assert.match(source, /import \{ SessionUsageCache \} from "\.\/token-stats\.ts";/);
+  assert.match(source, /tokenStatsCache\.get\(ctx\.sessionManager\)/);
   assert.match(source, /tokenStatsCache\.reset\(\)/);
+});
+
+for (const stopReason of ["error", "aborted"]) {
+  test(`billed ${stopReason} counts without replacing the last usable assistant`, () => {
+    const usable = assistantEvent(makeUsage(10, 5));
+    const failed = assistantEvent(makeUsage(20, 7, 3, 2), stopReason);
+    const stats = computeSessionTokenStats([usable, failed]);
+    assert.equal(stats.input, 30);
+    assert.equal(stats.output, 12);
+    assert.equal(stats.cost, 0.047);
+    assert.equal(stats.lastAssistant, usable.message);
+  });
+}
+
+function nativeToolEvent(usage = makeUsage(20, 7, 3, 2)) {
+  return { type: "message", message: { role: "toolResult", toolName: "any-tool", isError: true, usage } };
+}
+
+for (const type of ["toolResult", "usage", "compaction", "branch_summary"]) {
+  test(`${type} charges count without affecting assistant/context state and refresh at the tail`, () => {
+    const usable = assistantEvent(makeUsage(10, 5));
+    const usage = makeUsage(20, 7, 3, 2);
+    const tail = type === "toolResult" ? nativeToolEvent(usage) : { type, usage };
+    const events = [usable, tail];
+    const cache = new SessionTokenStatsCache();
+    const first = cache.get(events);
+    assert.equal(first.input, 30);
+    assert.equal(first.output, 12);
+    assert.equal(first.cacheRead, 3);
+    assert.equal(first.cacheWrite, 2);
+    assert.equal(first.cost, 0.047);
+    assert.equal(first.lastAssistant, usable.message);
+    assert.deepEqual(first, computeSessionTokenStats(events));
+    usage.output = 42;
+    usage.cost.total = 0.25;
+    const second = cache.get(events);
+    assert.notEqual(second, first);
+    assert.equal(second.output, 47);
+    assert.equal(second.cost, 0.265);
+    assert.deepEqual(second, computeSessionTokenStats(events));
+  });
+}
+
+test("native tool usage wins over legacy details on the same result, including zero usage", () => {
+  for (const usage of [makeUsage(10, 5), makeUsage(0, 0)]) {
+    const native = subagentToolResultEvent([9]);
+    Object.assign(native.message, { usage });
+    const events = [native, subagentToolResultEvent([0.25]), subagentSlashResultEvent([0.5])];
+    const cache = new SessionTokenStatsCache();
+    const stats = cache.get(events);
+    assert.equal(stats.cost, usage.cost.total);
+    assert.equal(stats.subagentCost, 0.75);
+    assert.deepEqual(stats, computeSessionTokenStats(events));
+  }
+});
+
+test("malformed usage and legacy costs cannot poison totals", () => {
+  const events: unknown[] = [null, [], { type: "usage", usage: null }];
+  for (const bad of [NaN, Infinity, "5", undefined]) {
+    events.push({ type: "usage", usage: { ...makeUsage(1, 2), input: bad } });
+    events.push({ type: "compaction", usage: { ...makeUsage(1, 2), cost: { total: bad } } });
+    events.push({ type: "message", message: { role: "toolResult", toolName: "subagent", details: { results: [{ usage: { cost: bad } }] } } });
+  }
+  const stats = computeSessionTokenStats(events);
+  assert.equal(stats.input, 0);
+  assert.equal(stats.cost, 0);
+  assert.equal(stats.subagentCost, 0);
+});
+
+test("full ledger accounting stays separate from same-size branch navigation and idle charges", async () => {
+  const { SessionUsageCache } = await import("../token-stats.ts");
+  const cache = new SessionUsageCache();
+  const a = assistantEvent(makeUsage(10, 5));
+  const b = assistantEvent(makeUsage(20, 7));
+  const high = { type: "thinking_level_change", thinkingLevel: "high" };
+  const low = { type: "thinking_level_change", thinkingLevel: "low" };
+  const ledger = [high, a, low, b, { type: "usage", usage: makeUsage(3, 1) }];
+  let branch: unknown[] = [high, a];
+  let leaf = "a";
+  let reads = 0;
+  const provider = {
+    getLeafId: () => leaf,
+    getBranch: () => branch,
+    getEntries: () => { reads++; return ledger.slice(); },
+  };
+  const first = cache.get(provider);
+  assert.equal(first.input, 33);
+  assert.equal(first.lastAssistant, a.message);
+  assert.equal(first.thinkingLevelFromSession, "high");
+  for (let i = 0; i < 20; i++) cache.get(provider);
+  assert.equal(reads, 1, "unchanged renders must not copy the ledger");
+  branch = [low, b];
+  leaf = "b";
+  const second = cache.get(provider);
+  assert.equal(second.input, first.input);
+  assert.equal(second.lastAssistant, b.message);
+  assert.equal(second.thinkingLevelFromSession, "low");
+  ledger[4].usage.output = 8;
+  assert.equal(cache.get(provider).output, 20);
+  const idle = { type: "usage", usage: makeUsage(4, 2) };
+  ledger.push(idle);
+  leaf = "idle";
+  assert.equal(cache.get(provider).input, 37);
+  const direct = computeSessionTokenStats(ledger);
+  const current = cache.get(provider);
+  assert.equal(current.cost, direct.cost);
+  assert.equal(current.output, direct.output);
+  cache.reset();
+  assert.equal(cache.get(provider).input, 37);
+});
+
+test("cache switches between legacy-only and native usage on the same tail", () => {
+  const tail = subagentToolResultEvent([0.5]);
+  const events = [tail];
+  const cache = new SessionTokenStatsCache();
+  assert.equal(cache.get(events).subagentCost, 0.5);
+  Object.assign(tail.message, { usage: makeUsage(10, 5) });
+  const native = cache.get(events);
+  assert.equal(native.subagentCost, 0);
+  assert.equal(native.cost, 0.015);
+  assert.deepEqual(native, computeSessionTokenStats(events));
+  delete (tail.message as any).usage;
+  const legacy = cache.get(events);
+  assert.equal(legacy.subagentCost, 0.5);
+  assert.equal(legacy.cost, 0);
+  assert.deepEqual(legacy, computeSessionTokenStats(events));
+});
+
+test("full ledger cache does not rescan historical usage on unchanged renders", async () => {
+  const { SessionUsageCache } = await import("../token-stats.ts");
+  const cache = new SessionUsageCache();
+  let historicalReads = 0;
+  const head = assistantEvent(makeUsage(10, 5));
+  const usage = head.message.usage;
+  Object.defineProperty(head.message, "usage", { get: () => { historicalReads++; return usage; } });
+  const entries = [head, nativeToolEvent()];
+  const provider = { getLeafId: () => "tail", getBranch: () => entries, getEntries: () => entries.slice() };
+  assert.equal(cache.get(provider).input, 30);
+  assert.ok(historicalReads > 0);
+  const reads = historicalReads;
+  for (let i = 0; i < 20; i++) cache.get(provider);
+  assert.equal(historicalReads, reads);
+});
+
+test("ledger count catches appends followed by a return to the cached leaf", async () => {
+  const { SessionUsageCache } = await import("../token-stats.ts");
+  const cache = new SessionUsageCache();
+  const entries: unknown[] = [userEvent()];
+  const provider = {
+    getLeafId: () => "root",
+    getBranch: () => [entries[0]],
+    getEntries: () => entries.slice(),
+    getEntryCount: () => entries.length,
+  };
+  assert.equal(cache.get(provider).cost, 0);
+  entries.push({ type: "usage", usage: makeUsage(2_000, 0) });
+  assert.equal(provider.getLeafId(), "root");
+  assert.equal(cache.get(provider).cost, 2);
+});
+
+test("tree navigation resets snapshots on SDKs without a ledger count", async () => {
+  const { SessionUsageCache } = await import("../token-stats.ts");
+  const cache = new SessionUsageCache();
+  const entries: unknown[] = [userEvent()];
+  const provider = {
+    getLeafId: () => "root",
+    getBranch: () => [entries[0]],
+    getEntries: () => entries.slice(),
+  };
+  assert.equal(cache.get(provider).cost, 0);
+  entries.push({ type: "usage", usage: makeUsage(2_000, 0) });
+  cache.reset();
+  assert.equal(cache.get(provider).cost, 2);
+});
+
+test("malformed metadata is safe in cached as well as direct accounting", () => {
+  const entries = [{ type: Symbol("bad") }, { type: "message", message: { role: Symbol("bad"), stopReason: {} } }];
+  assert.deepEqual(new SessionTokenStatsCache().get(entries), computeSessionTokenStats(entries));
 });

@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- Session token and cost totals include native tool, summary, explicit usage, and billed failure charges across all branches. Context and thinking stay on the active branch. Native usage replaces legacy subagent cost on the same result. Thanks to [@MattKotsenas](https://github.com/MattKotsenas) for reporting and contributing the accounting fix.
+
 ### Added
 - **Configurable outer bar padding** — Set `powerline.padding` to an integer from `0` to `8`; `0` makes primary and secondary rows flush-left, including wrapped rows. The default and invalid-value fallback are `1`, preserving existing spacing. Thanks to [Francis Qureshi (@francisqureshi)](https://github.com/francisqureshi).
 

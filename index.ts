@@ -30,7 +30,7 @@ import { getSeparator } from "./separators.ts";
 import { renderSegment } from "./segments.ts";
 import { resolveThinkingLevelSelection } from "./thinking-level.ts";
 import { getGitStatus, invalidateGitStatus, invalidateGitBranch, subscribeGitUpdates } from "./git-status.ts";
-import { SessionBranchCache, SessionTokenStatsCache } from "./token-stats.ts";
+import { SessionUsageCache } from "./token-stats.ts";
 import { ansi, getFgAnsiCode } from "./colors.ts";
 import { WelcomeComponent, WelcomeHeader, discoverLoadedCounts, getRecentSessions } from "./welcome.ts";
 import { createRenderScheduler } from "./render-scheduler.ts";
@@ -1297,8 +1297,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
   // Cache for token counting: avoid re-scanning the full session event list
   // on every render (250ms-1s cadence). Revalidates the trailing event's
   // stats signature so in-place streaming updates are not served stale.
-  const sessionBranchCache = new SessionBranchCache();
-  const tokenStatsCache = new SessionTokenStatsCache();
+  const tokenStatsCache = new SessionUsageCache();
   const coreContextUsageCache = new CoreContextUsageCache();
 
   const getShellPath = () => process.env.SHELL || "/bin/sh";
@@ -1316,7 +1315,6 @@ export default function powerlineFooter(pi: ExtensionAPI) {
   const resetLayoutCache = () => {
     lastLayoutResult = null;
     layoutDirty = true;
-    sessionBranchCache.reset();
     tokenStatsCache.reset();
     coreContextUsageCache.reset();
   };
@@ -2002,6 +2000,7 @@ export default function powerlineFooter(pi: ExtensionAPI) {
   });
 
   pi.on("session_tree", async (_event, ctx) => {
+    tokenStatsCache.reset();
     currentCtx = ctx;
     currentThinkingLevel = null;
     liveAssistantUsage = null;
@@ -2895,11 +2894,8 @@ export default function powerlineFooter(pi: ExtensionAPI) {
     const presetDef = getPreset(config.preset);
     const colors: ColorScheme = presetDef.colors ?? getDefaultColors();
 
-    // Build usage stats and get thinking level from session (cached; the full
-    // event list is only re-scanned when events are appended or the trailing
-    // event's stats-relevant fields change, e.g. in-place streaming updates)
-    const sessionEvents = sessionBranchCache.get(ctx.sessionManager);
-    const tokenStats = tokenStatsCache.get(sessionEvents);
+    // Bill the full ledger while keeping context and thinking on the active branch.
+    const tokenStats = tokenStatsCache.get(ctx.sessionManager);
     const { input, output, cacheRead, cacheWrite, cost, subagentCost } = tokenStats;
     const lastAssistant = tokenStats.lastAssistant;
     const thinkingLevelFromSession = tokenStats.thinkingLevelFromSession;
