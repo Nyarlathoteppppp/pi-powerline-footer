@@ -2,13 +2,21 @@
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-23
+
+### Highlights
+- In large repositories, you can make the git segment check for changes less often. Changes the agent makes still show up right away.
+- You can remove the padding around the Powerline bar, or add more.
+- Pi's working, compaction, and retry indicators can sit on their own row above the bar instead of in the editor border.
+- Session cost and token totals now count every charge, including ones from other branches and from failed requests you were billed for.
+
 ### Added
-- **Configurable git status refresh interval** — Set `git.statusTtlMs` to run `git status --porcelain` less often, which helps in large repositories. Bash commands now refresh the dirty counts when they finish, so agent changes still show right away. The default stays 1000 ms. Thanks to [@kakkoyun](https://github.com/kakkoyun).
-- **Configurable outer bar padding** — Set `powerline.padding` to an integer from `0` to `8`; `0` makes primary and secondary rows flush-left, including wrapped rows. The default and invalid-value fallback are `1`, preserving existing spacing. Thanks to [Francis Qureshi (@francisqureshi)](https://github.com/francisqureshi).
-- **Working indicator placement** — Set `powerline.workingIndicatorPlacement` to `"above-powerline"` to show Pi's working, compaction, summarization, and retry indicators on their own row above the Powerline bar instead of in the editor's top border. The default `"editor-border"` keeps the current behavior. Thanks to [@DeLuke84](https://github.com/DeLuke84) for #255.
+- **How often the git segment checks for changes** — Set `git.statusTtlMs` (in milliseconds) to check for changed files less often, which helps in large repositories and repositories with submodules. Files the agent changes through bash, edit, or write still update the counts right away. The default stays 1000 ms. Thanks to [@kakkoyun](https://github.com/kakkoyun) for #257.
+- **Bar padding** — Set `powerline.padding` to a whole number from `0` to `8` to control the space around the bar. `0` lines every row up against the left edge, including wrapped rows. The default is `1`, the same spacing as before. Thanks to [Francis Qureshi (@francisqureshi)](https://github.com/francisqureshi) for #253.
+- **Where the working indicator shows** — Set `powerline.workingIndicatorPlacement` to `"above-powerline"` to show Pi's working, compaction, summarization, and retry indicators on their own row above the bar. The default, `"editor-border"`, keeps them in the editor's top border. Thanks to [@DeLuke84](https://github.com/DeLuke84) for #255.
 
 ### Fixed
-- Session token and cost totals include native tool, summary, explicit usage, and billed failure charges across all branches. Context and thinking stay on the active branch. Native usage replaces legacy subagent cost on the same result. Thanks to [@MattKotsenas](https://github.com/MattKotsenas) for reporting and contributing the accounting fix.
+- **Complete session cost and token totals** — Totals now include charges from tools, summaries, and failed requests you were still billed for, across every branch of the session. Context usage and thinking level still describe the branch you're on. Subagent costs are no longer counted twice. Thanks to [@MattKotsenas](https://github.com/MattKotsenas) for reporting and fixing this in #254.
 
 ## [0.20.2] - 2026-10-16
 
