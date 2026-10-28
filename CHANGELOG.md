@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Fixed
-- **Session replacement cleanup** — Avoid stale extension context errors during session shutdown and welcome dismissal, and always reset session state when the outgoing context is stale. Thanks to [@wu546526](https://github.com/wu546526) for reporting #260.
+- **Session replacement cleanup** — Avoid stale extension context errors during session shutdown and welcome dismissal, and always reset session state when the outgoing context is stale. Thanks to [@wu546526](https://github.com/wu546526) for reporting #260, fixed in #261 by [@Nyarlathoteppppp](https://github.com/Nyarlathoteppppp).
 
 ## [0.21.0] - 2026-10-23
 
